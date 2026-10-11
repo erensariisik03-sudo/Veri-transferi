@@ -41,6 +41,16 @@ class Receiver(private val ctx: Context, private val link: Link) {
     private var curHost: String? = null
     private var callback: ConnectivityManager.NetworkCallback? = null
 
+    // Android 10+ ağ isteği: BİR KEZ açılır ve aktarım bitene kadar tutulur. Her yeni istek
+    // sistemde yeni "geçici ağa bağlan" onay penceresi demek ve mevcut bağlantıyı da koparır.
+    @Volatile
+    private var directNet: Network? = null
+
+    @Volatile
+    private var requestFailed = false
+    private var curIsDirect = false
+    private var waitFails = 0
+
     /** true: yerel ağ yerine doğrudan (Wi-Fi Direct/hotspot) ağı kullan. */
     @Volatile
     private var preferDirect = false
@@ -204,13 +214,13 @@ class Receiver(private val ctx: Context, private val link: Link) {
         return c
     }
 
-    private fun probe(h: String, n: Network?): Boolean {
+    private fun probe(h: String, n: Network?, timeout: Int = 1500): Boolean {
         return try {
             val t0 = System.nanoTime()
             val url = URL("http://$h:${link.port}/ping?k=${link.token}")
             val c = (if (n != null) n.openConnection(url) else url.openConnection()) as HttpURLConnection
-            c.connectTimeout = 1500
-            c.readTimeout = 1500
+            c.connectTimeout = timeout
+            c.readTimeout = timeout
             val ok = c.responseCode == 200
             c.disconnect()
             if (ok) lastRtt = (System.nanoTime() - t0) / 1_000_000L
@@ -227,6 +237,7 @@ class Receiver(private val ctx: Context, private val link: Link) {
                 probe(h, n) // ikinci ölçüm: ilk bağlantı yavaş görünmesin
                 curHost = h
                 net = n
+                curIsDirect = n != null && n == directNet
                 return true
             }
         }
@@ -248,8 +259,7 @@ class Receiver(private val ctx: Context, private val link: Link) {
      */
     @Synchronized
     fun ensureLink(): Boolean {
-        val h = curHost
-        if (h != null && probe(h, net)) return true
+        if (alive()) return true
         val canDirect = link.ssid != null && link.pass != null
         var searched = false
         var lan = false
@@ -261,6 +271,22 @@ class Receiver(private val ctx: Context, private val link: Link) {
         }
         if (canDirect && !cancelled && joinDirect()) return true
         return lan || (!searched && findWifi())
+    }
+
+    /**
+     * Mevcut yol çalışıyor mu? Yoğun aktarımda tek bir ping gecikebilir; hemen "koptu" deyip
+     * ağa yeniden katılmamak için birkaç kez ve daha uzun süreyle denenir.
+     */
+    private fun alive(): Boolean {
+        val h = curHost ?: return false
+        if (curIsDirect && directNet == null) return false // ağ gerçekten düştü
+        for (i in 0 until 3) {
+            if (cancelled) return false
+            if (probe(h, net, 3000)) return true
+            if (curIsDirect && directNet == null) return false
+            sleep(500)
+        }
+        return false
     }
 
     private fun joinDirect(): Boolean {
@@ -306,16 +332,25 @@ class Receiver(private val ctx: Context, private val link: Link) {
         }
     }
 
-    /** Android 10+: sistem onayıyla belirli ağa katıl. */
+    /** Android 10+: sistem onayıyla belirli ağa katıl. İstek açıksa yenisini açmaz, onu bekler. */
     private fun joinSpecifier(): Network? {
-        Bus.update { it.copy(phase = Phase.CONNECTING, message = "Gönderenin Wi-Fi ağına bağlanılıyor… (onay penceresi çıkarsa Bağlan'a bas)") }
-        callback?.let {
-            try {
-                cm.unregisterNetworkCallback(it)
-            } catch (e: Exception) {
+        val active = callback != null && !requestFailed
+        if (active && waitFails < 2) {
+            // Mevcut istek sistem tarafından kendiliğinden yeniden bağlanır; onay penceresi çıkmaz.
+            Bus.update { it.copy(phase = Phase.RECONNECTING, message = "Gönderenin ağına yeniden bağlanılıyor…", speedBps = 0) }
+            val end = System.currentTimeMillis() + 20000
+            while (!cancelled && System.currentTimeMillis() < end) {
+                directNet?.let { waitFails = 0; return it }
+                sleep(300)
             }
+            waitFails++
+            return directNet
         }
-        callback = null
+        waitFails = 0
+        Bus.update { it.copy(phase = Phase.CONNECTING, message = "Gönderenin Wi-Fi ağına bağlanılıyor… (onay penceresi çıkarsa Bağlan'a bas)") }
+        val old = callback
+        directNet = null
+        requestFailed = false
         val spec = WifiNetworkSpecifier.Builder()
             .setSsid(link.ssid!!)
             .setWpa2Passphrase(link.pass!!)
@@ -326,26 +361,34 @@ class Receiver(private val ctx: Context, private val link: Link) {
             .setNetworkSpecifier(spec)
             .build()
         val latch = CountDownLatch(1)
-        var got: Network? = null
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                got = network
+                directNet = network
                 latch.countDown()
             }
 
             override fun onUnavailable() {
+                requestFailed = true
                 latch.countDown()
             }
 
             override fun onLost(network: Network) {
+                if (directNet == network) directNet = null
                 if (net == network) net = null
             }
         }
         callback = cb
         return try {
             cm.requestNetwork(req, cb, 30000)
+            // Yeni istek açıldıktan sonra eskisi bırakılır (araya boşluk girmesin).
+            old?.let {
+                try {
+                    cm.unregisterNetworkCallback(it)
+                } catch (e: Exception) {
+                }
+            }
             latch.await(32, TimeUnit.SECONDS)
-            got
+            directNet
         } catch (e: Exception) {
             null
         }
