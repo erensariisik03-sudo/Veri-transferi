@@ -16,8 +16,8 @@ class MainActivity : Activity() {
         col.addView(
             Ui.text(
                 this,
-                "Telefondan telefona dosya aktar. IP yok, QR okut yeter. " +
-                    "Cihazlar destekliyorsa 5 GHz Wi-Fi, yoksa 2.4 GHz kullanılır.",
+                "Gönder/Al: QR okut, gönderen kendi ağını açar (5 GHz varsa 5 GHz). " +
+                    "Ortak havuz: aynı ağdaki tüm cihazlar dosyaları birbirinde görür.",
                 15f, Ui.MUTED
             )
         )
@@ -26,6 +26,9 @@ class MainActivity : Activity() {
         })
         col.addView(Ui.button(this, "Al (QR tara)", false) {
             startActivity(Intent(this, ReceiveActivity::class.java))
+        })
+        col.addView(Ui.button(this, "Ortak havuz (aynı ağda, çok cihaz)", false) {
+            startActivity(Intent(this, PoolActivity::class.java))
         })
         resume = Ui.button(this, "Devam eden aktarımı göster", false) {
             val s = Bus.state

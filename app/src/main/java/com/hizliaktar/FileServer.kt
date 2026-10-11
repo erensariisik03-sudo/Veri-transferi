@@ -18,8 +18,8 @@ import java.util.concurrent.Executors
  */
 class FileServer(
     private val ctx: Context,
-    private val token: String,
-    private val files: List<SendFile>,
+    private val tokenOk: (String?) -> Boolean,
+    private val files: () -> List<SendFile?>,
     private val onProgress: (index: Int, bytesReached: Long) -> Unit,
     private val onClient: () -> Unit
 ) {
@@ -71,7 +71,7 @@ class FileServer(
             val k = query.split("&").map { it.split("=", limit = 2) }
                 .firstOrNull { it[0] == "k" }?.getOrNull(1)?.let { URLDecoder.decode(it, "UTF-8") }
             val out = BufferedOutputStream(sock.getOutputStream(), 1 shl 16)
-            if (k != token) {
+            if (!tokenOk(k)) {
                 reply(out, 403, "Forbidden", "yetkisiz")
                 return
             }
@@ -81,7 +81,8 @@ class FileServer(
                 path == "/manifest" -> reply(out, 200, "OK", manifest(), "application/json")
                 path.startsWith("/file/") -> {
                     val idx = path.removePrefix("/file/").toIntOrNull()
-                    if (idx == null || idx !in files.indices) {
+                    val file = if (idx == null) null else files().getOrNull(idx)
+                    if (idx == null || file == null) {
                         reply(out, 404, "Not Found", "yok")
                     } else {
                         var range = 0L
@@ -91,7 +92,7 @@ class FileServer(
                                 if (m != null) range = m.groupValues[1].toLong()
                             }
                         }
-                        sendFile(out, idx, range)
+                        sendFile(out, idx, file, range)
                     }
                 }
                 else -> reply(out, 404, "Not Found", "yok")
@@ -122,8 +123,8 @@ class FileServer(
 
     private fun manifest(): String {
         val arr = JSONArray()
-        files.forEachIndexed { i, f ->
-            arr.put(JSONObject().put("i", i).put("n", f.name).put("s", f.size))
+        files().forEachIndexed { i, f ->
+            if (f != null) arr.put(JSONObject().put("i", i).put("n", f.name).put("s", f.size))
         }
         return JSONObject().put("files", arr).toString()
     }
@@ -136,8 +137,7 @@ class FileServer(
         out.write(b)
     }
 
-    private fun sendFile(out: OutputStream, idx: Int, start: Long) {
-        val f = files[idx]
+    private fun sendFile(out: OutputStream, idx: Int, f: SendFile, start: Long) {
         if (start > f.size) {
             reply(out, 416, "Range Not Satisfiable", "aralik")
             return

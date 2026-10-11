@@ -95,7 +95,7 @@ class TransferService : Service() {
         startTicker()
         reached = LongArray(files.size)
         val token = (1..10).map { "abcdefghjkmnpqrstuvwxyz23456789".random() }.joinToString("")
-        val srv = FileServer(this, token, files, { i, b -> onSent(i, b) }, { onClient() })
+        val srv = FileServer(this, { it == token }, { files }, { i, b -> onSent(i, b) }, { onClient() })
         val port = try {
             srv.start()
         } catch (e: Exception) {

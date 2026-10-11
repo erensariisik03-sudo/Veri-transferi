@@ -1,13 +1,14 @@
-name: APK Derle
+name: APK ve EXE Derle
 
-# Yalnızca elle / script ile tetiklenir -> her derlemede TEK build çıkar.
-# (Push'ta da çalışsın istersen aşağıya "push:" bloğu ekle; ama o zaman
-# hem push hem manuel tetikleme iki build üretir.)
+# Yalnızca elle / script ile tetiklenir. Tek çalıştırma iki dosya üretir:
+#   HizliAktar-apk  -> Android uygulaması (app-debug.apk)
+#   HizliAktar-exe  -> Windows uygulaması (HizliAktar.exe)
+# (Push'ta da çalışsın istersen "push:" ekle; ama manuel tetiklemeyle birlikte iki build olur.)
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  android:
     runs-on: ubuntu-latest
     steps:
       - name: Kodu al
@@ -32,3 +33,26 @@ jobs:
         with:
           name: HizliAktar-apk
           path: app/build/outputs/apk/debug/*.apk
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Kodu al
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Bagimliliklar
+        run: pip install -r windows/requirements.txt pyinstaller
+
+      - name: EXE derle
+        run: pyinstaller --noconsole --onefile --name HizliAktar --paths windows windows/app.py
+
+      - name: EXE yukle
+        uses: actions/upload-artifact@v4
+        with:
+          name: HizliAktar-exe
+          path: dist/HizliAktar.exe

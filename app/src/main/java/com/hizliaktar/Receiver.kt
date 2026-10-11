@@ -51,6 +51,8 @@ class Receiver(private val ctx: Context, private val link: Link) {
     // ---------------------------------------------------------------- akış
 
     fun run() {
+        // Öncelik: gönderenin kendi açtığı ağ (Wi-Fi Direct/hotspot). Yerel ağ yedek.
+        preferDirect = link.ssid != null && link.pass != null
         Bus.update { it.copy(phase = Phase.CONNECTING, message = "Gönderene bağlanılıyor…") }
         var tries = 0
         while (!cancelled && !ensureLink()) {
@@ -174,7 +176,7 @@ class Receiver(private val ctx: Context, private val link: Link) {
         if (cancelled) return false
         return try {
             if (!part.exists()) part.createNewFile()
-            save(part, name)
+            Saver.save(ctx, part, name)
             part.delete()
             setDone(i, size)
             true
@@ -188,49 +190,6 @@ class Receiver(private val ctx: Context, private val link: Link) {
         Bus.update { s ->
             s.copy(files = s.files.mapIndexed { j, r -> if (j == i) r.copy(done = done) else r })
         }
-    }
-
-    /** Android 9 ve altı: doğrudan İndirilenler/HizliAktar klasörüne yaz. */
-    private fun saveLegacy(part: File, name: String) {
-        val dir = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            "HizliAktar"
-        )
-        if (!dir.exists() && !dir.mkdirs()) throw IOException("Klasör oluşturulamadı")
-        var target = File(dir, name)
-        var n = 1
-        val base = name.substringBeforeLast('.', name)
-        val ext = name.substringAfterLast('.', "")
-        while (target.exists()) {
-            target = File(dir, if (ext.isEmpty()) "$base ($n)" else "$base ($n).$ext")
-            n++
-        }
-        FileInputStream(part).use { i -> FileOutputStream(target).use { o -> i.copyTo(o, 1 shl 18) } }
-        MediaScannerConnection.scanFile(ctx, arrayOf(target.absolutePath), null, null)
-    }
-
-    private fun save(part: File, rawName: String) {
-        val name = rawName.replace('/', '_').replace('\\', '_')
-        if (Build.VERSION.SDK_INT < 29) {
-            saveLegacy(part, name)
-            return
-        }
-        val ext = name.substringAfterLast('.', "").lowercase()
-        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
-        val r = ctx.contentResolver
-        val v = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.MIME_TYPE, mime)
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/HizliAktar")
-            put(MediaStore.Downloads.IS_PENDING, 1)
-        }
-        val uri = r.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v)
-            ?: throw IOException("Dosya oluşturulamadı")
-        val os = r.openOutputStream(uri) ?: throw IOException("Dosya açılamadı")
-        os.use { o -> FileInputStream(part).use { it.copyTo(o, 1 shl 18) } }
-        v.clear()
-        v.put(MediaStore.Downloads.IS_PENDING, 0)
-        r.update(uri, v, null, null)
     }
 
     // ---------------------------------------------------------------- ağ
@@ -284,8 +243,8 @@ class Receiver(private val ctx: Context, private val link: Link) {
     }
 
     /**
-     * Gönderene giden çalışan bir yol bul. Yerel ağ hızlıysa onu kullanır;
-     * yoksa, yavaşsa veya sık koparsa gönderenin kendi ağına (Wi-Fi Direct/hotspot) katılır.
+     * Gönderene giden çalışan bir yol bul. Önce gönderenin kendi ağına (Wi-Fi Direct/hotspot)
+     * katılmayı dener; olmazsa ortak yerel ağı kullanır. QR'da ağ bilgisi yoksa yalnızca yerel ağ.
      */
     @Synchronized
     fun ensureLink(): Boolean {

@@ -25,6 +25,7 @@ class SendActivity : Activity() {
     private lateinit var btnStop: Button
     private lateinit var qrView: ImageView
     private lateinit var qrHint: TextView
+    private lateinit var btnCopy: Button
     private lateinit var panel: TransferPanel
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -46,6 +47,15 @@ class SendActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(size, size).apply { topMargin = Ui.dp(this@SendActivity, 8) }
         }
         col.addView(qrView)
+        btnCopy = Ui.button(this, "Bağlantıyı kopyala (PC'ye yapıştırmak için)", false) {
+            val p = Bus.state.qrPayload
+            if (p != null) {
+                val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("hizli", p))
+                Toast.makeText(this, "Kopyalandı.", Toast.LENGTH_SHORT).show()
+            }
+        }
+        col.addView(btnCopy)
 
         panel = TransferPanel(this)
         panel.view.setPadding(0, Ui.dp(this, 16), 0, 0)
@@ -138,6 +148,7 @@ class SendActivity : Activity() {
         val qr = s.qrPayload
         Ui.show(qrView, active && qr != null)
         Ui.show(qrHint, active && qr != null)
+        Ui.show(btnCopy, active && qr != null)
         if (qr != null && qr != shownQr) {
             shownQr = qr
             qrView.setImageBitmap(Util.qr(qr))

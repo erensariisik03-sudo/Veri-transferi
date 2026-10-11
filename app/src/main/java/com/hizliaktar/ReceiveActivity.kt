@@ -79,6 +79,13 @@ class ReceiveActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         val r = IntentIntegrator.parseActivityResult(requestCode, resultCode, data) ?: return
         val text = r.contents ?: return
+        val poolKey = PoolKey.parse(text)
+        if (poolKey != null && text.trim().startsWith("hizli://pool")) {
+            PoolKey.save(this, poolKey)
+            PoolService.start(this)
+            startActivity(Intent(this, PoolActivity::class.java))
+            return
+        }
         if (Link.parse(text) == null) {
             Toast.makeText(this, "Bu QR Hızlı Aktar koduna benzemiyor.", Toast.LENGTH_LONG).show()
             return
