@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 
@@ -52,10 +53,45 @@ class WifiDirectHost(private val ctx: Context) {
             onFail("Bu cihaz Wi-Fi Direct desteklemiyor.")
             return
         }
+        active = true
+        if (Build.VERSION.SDK_INT < 29) {
+            // Eski Android: ad/şifre sistemden gelir, grup kurulunca okunur.
+            removeThen { createLegacy(onReady, onFail) }
+            return
+        }
         ssid = "DIRECT-HA-" + rnd(4)
         pass = rnd(12)
-        active = true
         removeThen { create(0, onReady, onFail) }
+    }
+
+    private fun createLegacy(onReady: () -> Unit, onFail: (String) -> Unit) {
+        val ch = channel ?: return onFail("Wi-Fi Direct kanalı yok.")
+        mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                readGroup(ch, 0, onReady, onFail)
+            }
+
+            override fun onFailure(reason: Int) {
+                onFail("Wi-Fi Direct grubu kurulamadı.")
+            }
+        })
+    }
+
+    /** Grup bilgisi yayın gelene kadar boş dönebilir; birkaç kez dene. */
+    private fun readGroup(ch: WifiP2pManager.Channel, n: Int, onReady: () -> Unit, onFail: (String) -> Unit) {
+        mgr.requestGroupInfo(ch) { g ->
+            val p = g?.passphrase
+            if (g != null && p != null) {
+                ssid = g.networkName
+                pass = p
+                band = "Otomatik"
+                onReady()
+            } else if (n < 6 && active) {
+                handler.postDelayed({ readGroup(ch, n + 1, onReady, onFail) }, 500)
+            } else {
+                onFail("Wi-Fi Direct grup bilgisi okunamadı.")
+            }
+        }
     }
 
     private fun removeThen(next: () -> Unit) {
@@ -72,6 +108,7 @@ class WifiDirectHost(private val ctx: Context) {
     }
 
     private fun config(i: Int): WifiP2pConfig? = try {
+        if (Build.VERSION.SDK_INT < 29) throw IllegalStateException("eski sürüm")
         WifiP2pConfig.Builder()
             .setNetworkName(ssid!!)
             .setPassphrase(pass!!)

@@ -6,7 +6,12 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.media.MediaScannerConnection
+import android.net.wifi.SupplicantState
+import android.net.wifi.WifiConfiguration
+import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
+import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
@@ -35,6 +40,13 @@ class Receiver(private val ctx: Context, private val link: Link) {
     private var net: Network? = null
     private var curHost: String? = null
     private var callback: ConnectivityManager.NetworkCallback? = null
+
+    /** true: yerel ağ yerine doğrudan (Wi-Fi Direct/hotspot) ağı kullan. */
+    @Volatile
+    private var preferDirect = false
+
+    @Volatile
+    private var lastRtt = 0L
 
     // ---------------------------------------------------------------- akış
 
@@ -142,6 +154,8 @@ class Receiver(private val ctx: Context, private val link: Link) {
             } catch (e: IOException) {
                 if (cancelled) return false
                 stall = if (part.length() > before) 1 else stall + 1
+                // Yerel ağ üst üste koparsa doğrudan ağa geç.
+                if (stall >= 3 && link.ssid != null) preferDirect = true
                 if (stall > 40) {
                     fail("Bağlantı kurtarılamadı. QR'ı tekrar tara; kaldığın yerden devam eder.")
                     return false
@@ -176,8 +190,31 @@ class Receiver(private val ctx: Context, private val link: Link) {
         }
     }
 
+    /** Android 9 ve altı: doğrudan İndirilenler/HizliAktar klasörüne yaz. */
+    private fun saveLegacy(part: File, name: String) {
+        val dir = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            "HizliAktar"
+        )
+        if (!dir.exists() && !dir.mkdirs()) throw IOException("Klasör oluşturulamadı")
+        var target = File(dir, name)
+        var n = 1
+        val base = name.substringBeforeLast('.', name)
+        val ext = name.substringAfterLast('.', "")
+        while (target.exists()) {
+            target = File(dir, if (ext.isEmpty()) "$base ($n)" else "$base ($n).$ext")
+            n++
+        }
+        FileInputStream(part).use { i -> FileOutputStream(target).use { o -> i.copyTo(o, 1 shl 18) } }
+        MediaScannerConnection.scanFile(ctx, arrayOf(target.absolutePath), null, null)
+    }
+
     private fun save(part: File, rawName: String) {
         val name = rawName.replace('/', '_').replace('\\', '_')
+        if (Build.VERSION.SDK_INT < 29) {
+            saveLegacy(part, name)
+            return
+        }
         val ext = name.substringAfterLast('.', "").lowercase()
         val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
         val r = ctx.contentResolver
@@ -210,12 +247,14 @@ class Receiver(private val ctx: Context, private val link: Link) {
 
     private fun probe(h: String, n: Network?): Boolean {
         return try {
+            val t0 = System.nanoTime()
             val url = URL("http://$h:${link.port}/ping?k=${link.token}")
             val c = (if (n != null) n.openConnection(url) else url.openConnection()) as HttpURLConnection
             c.connectTimeout = 1500
             c.readTimeout = 1500
             val ok = c.responseCode == 200
             c.disconnect()
+            if (ok) lastRtt = (System.nanoTime() - t0) / 1_000_000L
             ok
         } catch (e: Exception) {
             false
@@ -226,6 +265,7 @@ class Receiver(private val ctx: Context, private val link: Link) {
         for (h in link.hosts) {
             if (cancelled) return false
             if (probe(h, n)) {
+                probe(h, n) // ikinci ölçüm: ilk bağlantı yavaş görünmesin
                 curHost = h
                 net = n
                 return true
@@ -234,24 +274,81 @@ class Receiver(private val ctx: Context, private val link: Link) {
         return false
     }
 
-    /** Gönderene giden çalışan bir yol bul; yoksa Wi-Fi Direct ağına katıl. */
-    @Synchronized
-    fun ensureLink(): Boolean {
-        val h = curHost
-        if (h != null && probe(h, net)) return true
+    /** Ortak yerel ağdaki (veya bağlı Wi-Fi ağlarındaki) göndereni ara. */
+    private fun findWifi(): Boolean {
         for (n in cm.allNetworks) {
             val caps = cm.getNetworkCapabilities(n) ?: continue
             if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && tryHosts(n)) return true
         }
-        if (tryHosts(null)) return true
-        if (link.ssid != null && link.pass != null && !cancelled) {
-            val n = join()
-            if (n != null && tryHosts(n)) return true
-        }
-        return false
+        return tryHosts(null)
     }
 
-    private fun join(): Network? {
+    /**
+     * Gönderene giden çalışan bir yol bul. Yerel ağ hızlıysa onu kullanır;
+     * yoksa, yavaşsa veya sık koparsa gönderenin kendi ağına (Wi-Fi Direct/hotspot) katılır.
+     */
+    @Synchronized
+    fun ensureLink(): Boolean {
+        val h = curHost
+        if (h != null && probe(h, net)) return true
+        val canDirect = link.ssid != null && link.pass != null
+        var searched = false
+        var lan = false
+        if (!preferDirect || !canDirect) {
+            searched = true
+            lan = findWifi()
+            if (lan && (!canDirect || lastRtt <= 80)) return true
+            if (lan) preferDirect = true
+        }
+        if (canDirect && !cancelled && joinDirect()) return true
+        return lan || (!searched && findWifi())
+    }
+
+    private fun joinDirect(): Boolean {
+        if (Build.VERSION.SDK_INT >= 29) {
+            val n = joinSpecifier() ?: return false
+            return tryHosts(n)
+        }
+        return joinLegacy() && findWifi()
+    }
+
+    /** Android 9 ve altı: klasik Wi-Fi yapılandırması ile gönderenin ağına katıl. */
+    @Suppress("DEPRECATION")
+    private fun joinLegacy(): Boolean {
+        Bus.update { it.copy(phase = Phase.CONNECTING, message = "Gönderenin Wi-Fi ağına bağlanılıyor…") }
+        return try {
+            val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            if (!wm.isWifiEnabled) wm.isWifiEnabled = true
+            val q = "\"" + link.ssid + "\""
+            val conf = WifiConfiguration()
+            conf.SSID = q
+            conf.preSharedKey = "\"" + link.pass + "\""
+            conf.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK)
+            var id = wm.addNetwork(conf)
+            if (id < 0) id = wm.configuredNetworks?.firstOrNull { it.SSID == q }?.networkId ?: -1
+            if (id < 0) return false
+            wm.disconnect()
+            wm.enableNetwork(id, true)
+            wm.reconnect()
+            val end = System.currentTimeMillis() + 25000
+            while (!cancelled && System.currentTimeMillis() < end) {
+                val info = wm.connectionInfo
+                if (info != null && info.networkId == id &&
+                    info.supplicantState == SupplicantState.COMPLETED && info.ipAddress != 0
+                ) {
+                    sleep(1000)
+                    return true
+                }
+                sleep(500)
+            }
+            false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** Android 10+: sistem onayıyla belirli ağa katıl. */
+    private fun joinSpecifier(): Network? {
         Bus.update { it.copy(phase = Phase.CONNECTING, message = "Gönderenin Wi-Fi ağına bağlanılıyor… (onay penceresi çıkarsa Bağlan'a bas)") }
         callback?.let {
             try {

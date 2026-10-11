@@ -18,7 +18,7 @@ class ReceiveActivity : Activity() {
     private lateinit var btnStop: Button
     private lateinit var panel: TransferPanel
 
-    private val core get() = listOf(Perms.wifi(), Manifest.permission.CAMERA)
+    private val core get() = listOf(Perms.wifi(), Manifest.permission.CAMERA) + Perms.storage()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

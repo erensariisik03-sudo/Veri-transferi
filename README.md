@@ -12,7 +12,7 @@ Telefondan telefona QR ile dosya aktarımı. IP/port/PIN yok.
 ## Derleme
 
 1. Bu klasörün içeriğini bir GitHub reposuna yükle (kökte `settings.gradle.kts` olmalı).
-2. Actions → "APK Derle" otomatik çalışır (push'ta) veya "Run workflow".
+2. Actions → "APK Derle" → "Run workflow" ile çalıştır (yalnızca elle tetiklenir, tek build çıkar).
 3. Bitince Artifacts → `HizliAktar-apk` içinden `app-debug.apk` indir, kur.
 
-Gereksinim: Android 10 (API 29) ve üzeri.
+Gereksinim: Android 8.0 (API 26) ve üzeri.

@@ -88,6 +88,10 @@ object Perms {
         if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES
         else Manifest.permission.ACCESS_FINE_LOCATION
 
+    /** Android 9 ve altında İndirilenler klasörüne yazmak için gerekli; yenilerinde gerekmez. */
+    fun storage(): List<String> =
+        if (Build.VERSION.SDK_INT < 29) listOf(Manifest.permission.WRITE_EXTERNAL_STORAGE) else emptyList()
+
     fun all(core: List<String>): Array<String> {
         val l = ArrayList(core)
         if (Build.VERSION.SDK_INT >= 33) l.add(Manifest.permission.POST_NOTIFICATIONS)

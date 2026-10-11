@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -33,6 +34,7 @@ class TransferService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private var server: FileServer? = null
     private var wifi: WifiDirectHost? = null
+    private var hotspot: HotspotHost? = null
     private var receiver: Receiver? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -114,16 +116,43 @@ class TransferService : Service() {
                     )
                 }
             },
-            onFail = { why ->
+            onFail = { why -> startHotspot(port, token, why) }
+        )
+    }
+
+    /** Wi-Fi Direct olmadı: yerel hotspot dene, o da olmazsa ortak ağa güven. */
+    private fun startHotspot(port: Int, token: String, why: String) {
+        wifi?.stop()
+        wifi = null
+        Bus.update { it.copy(message = "Wi-Fi Direct olmadı, hotspot deneniyor…") }
+        val hs = HotspotHost(this)
+        hotspot = hs
+        hs.start(
+            onReady = {
+                // Arayüzün IP alması birkaç saniye sürebilir.
+                main.postDelayed({
+                    val ips = Util.localIps()
+                    val hosts = if (ips.isEmpty()) listOf("192.168.43.1") else ips
+                    val link = Link(hs.ssid, hs.pass, hosts, port, token)
+                    Bus.update {
+                        it.copy(
+                            phase = Phase.READY,
+                            message = "Alıcıda \"Al\" → QR'ı okut. Bağlantı: Hotspot",
+                            qrPayload = link.encode(), band = "Hotspot"
+                        )
+                    }
+                }, 1500)
+            },
+            onFail = { why2 ->
                 val hosts = Util.localIps()
                 if (hosts.isEmpty()) {
-                    fatal(why)
+                    fatal("$why $why2")
                 } else {
                     val link = Link(null, null, hosts, port, token)
                     Bus.update {
                         it.copy(
                             phase = Phase.READY,
-                            message = "Wi-Fi Direct kurulamadı. İki cihaz aynı Wi-Fi/hotspot'taysa QR yine çalışır.",
+                            message = "Kendi ağı açılamadı. İki cihaz aynı Wi-Fi'daysa QR yine çalışır.",
                             qrPayload = link.encode(), band = "Yerel ağ"
                         )
                     }
@@ -192,6 +221,8 @@ class TransferService : Service() {
         server = null
         wifi?.stop()
         wifi = null
+        hotspot?.stop()
+        hotspot = null
         receiver?.close()
         receiver = null
         try {
@@ -210,7 +241,10 @@ class TransferService : Service() {
             acquire(6 * 60 * 60 * 1000L)
         }
         val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "hizliaktar:wifi").apply {
+        @Suppress("DEPRECATION")
+        val mode = if (Build.VERSION.SDK_INT >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        else WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        wifiLock = wm.createWifiLock(mode, "hizliaktar:wifi").apply {
             setReferenceCounted(false)
             acquire()
         }

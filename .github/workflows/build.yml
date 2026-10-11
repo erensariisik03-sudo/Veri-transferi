@@ -1,8 +1,9 @@
 name: APK Derle
 
+# Yalnızca elle / script ile tetiklenir -> her derlemede TEK build çıkar.
+# (Push'ta da çalışsın istersen aşağıya "push:" bloğu ekle; ama o zaman
+# hem push hem manuel tetikleme iki build üretir.)
 on:
-  push:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
