@@ -1,0 +1,297 @@
+package com.hizliaktar
+
+import android.content.ContentValues
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiNetworkSpecifier
+import android.os.Environment
+import android.provider.MediaStore
+import android.webkit.MimeTypeMap
+import org.json.JSONObject
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+
+/**
+ * Alıcı: gönderene bağlanır, dosyaları sırayla indirir. Bağlantı koparsa
+ * ağı yeniden bulur / yeniden katılır ve kaldığı byte'tan devam eder.
+ */
+class Receiver(private val ctx: Context, private val link: Link) {
+
+    private val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+    @Volatile
+    var cancelled = false
+
+    @Volatile
+    private var net: Network? = null
+    private var curHost: String? = null
+    private var callback: ConnectivityManager.NetworkCallback? = null
+
+    // ---------------------------------------------------------------- akış
+
+    fun run() {
+        Bus.update { it.copy(phase = Phase.CONNECTING, message = "Gönderene bağlanılıyor…") }
+        var tries = 0
+        while (!cancelled && !ensureLink()) {
+            tries++
+            if (tries >= 6) return fail("Gönderene ulaşılamadı. QR'ı tekrar tara.")
+            sleep(1500)
+        }
+        if (cancelled) return
+        val list = loadManifest() ?: return fail("Dosya listesi alınamadı.")
+        Bus.update { s ->
+            s.copy(files = list.map { FileRow(it.first, it.second, 0) })
+        }
+        for (i in list.indices) {
+            if (!downloadFile(i, list[i].first, list[i].second)) return
+        }
+        Bus.update { it.copy(phase = Phase.DONE, message = "Tamamlandı. Dosyalar İndirilenler/HizliAktar içinde.", speedBps = 0) }
+    }
+
+    fun close() {
+        cancelled = true
+        callback?.let {
+            try {
+                cm.unregisterNetworkCallback(it)
+            } catch (e: Exception) {
+            }
+        }
+        callback = null
+    }
+
+    private fun fail(msg: String) {
+        if (!cancelled) Bus.update { it.copy(phase = Phase.ERROR, message = msg, speedBps = 0) }
+    }
+
+    private fun sleep(ms: Long) {
+        try {
+            Thread.sleep(ms)
+        } catch (e: InterruptedException) {
+        }
+    }
+
+    // ------------------------------------------------------------ manifest
+
+    private fun loadManifest(): List<Pair<String, Long>>? {
+        var tries = 0
+        while (!cancelled && tries < 30) {
+            try {
+                val c = open("/manifest", 0)
+                val txt = c.inputStream.bufferedReader().readText()
+                c.disconnect()
+                val arr = JSONObject(txt).getJSONArray("files")
+                return (0 until arr.length()).map {
+                    val o = arr.getJSONObject(it)
+                    o.getString("n") to o.getLong("s")
+                }
+            } catch (e: Exception) {
+                tries++
+                sleep(1000)
+                ensureLink()
+            }
+        }
+        return null
+    }
+
+    // ------------------------------------------------------------- indirme
+
+    private fun downloadFile(i: Int, name: String, size: Long): Boolean {
+        val dir = ctx.getExternalFilesDir("incoming") ?: ctx.cacheDir
+        val part = File(dir, "${link.token}_$i.part")
+        if (part.exists() && part.length() > size) part.delete()
+        var stall = 0
+        while (!cancelled && part.length() < size) {
+            val before = part.length()
+            try {
+                val c = open("/file/$i", before)
+                val code = c.responseCode
+                if (code != 200 && code != 206) throw IOException("HTTP $code")
+                val append = code == 206 && before > 0
+                if (!append && before > 0) part.delete()
+                var got = if (append) before else 0L
+                Bus.update { it.copy(phase = Phase.TRANSFERRING, message = "Aktarılıyor") }
+                FileOutputStream(part, append).use { out ->
+                    c.inputStream.use { inp ->
+                        val buf = ByteArray(1 shl 18)
+                        var last = 0L
+                        while (!cancelled) {
+                            val n = inp.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            got += n
+                            val now = System.nanoTime()
+                            if (now - last > 150_000_000L) {
+                                last = now
+                                setDone(i, got)
+                            }
+                        }
+                    }
+                }
+                c.disconnect()
+                setDone(i, part.length())
+                if (!cancelled && part.length() < size) throw IOException("eksik veri")
+            } catch (e: IOException) {
+                if (cancelled) return false
+                stall = if (part.length() > before) 1 else stall + 1
+                if (stall > 40) {
+                    fail("Bağlantı kurtarılamadı. QR'ı tekrar tara; kaldığın yerden devam eder.")
+                    return false
+                }
+                Bus.update {
+                    it.copy(
+                        phase = Phase.RECONNECTING,
+                        message = "Bağlantı koptu, yeniden bağlanılıyor… ($stall)",
+                        speedBps = 0
+                    )
+                }
+                sleep(minOf(1000L * stall, 5000L))
+                ensureLink()
+            }
+        }
+        if (cancelled) return false
+        return try {
+            if (!part.exists()) part.createNewFile()
+            save(part, name)
+            part.delete()
+            setDone(i, size)
+            true
+        } catch (e: Exception) {
+            fail("Kaydedilemedi: ${e.message}")
+            false
+        }
+    }
+
+    private fun setDone(i: Int, done: Long) {
+        Bus.update { s ->
+            s.copy(files = s.files.mapIndexed { j, r -> if (j == i) r.copy(done = done) else r })
+        }
+    }
+
+    private fun save(part: File, rawName: String) {
+        val name = rawName.replace('/', '_').replace('\\', '_')
+        val ext = name.substringAfterLast('.', "").lowercase()
+        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+        val r = ctx.contentResolver
+        val v = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, name)
+            put(MediaStore.Downloads.MIME_TYPE, mime)
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/HizliAktar")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = r.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v)
+            ?: throw IOException("Dosya oluşturulamadı")
+        val os = r.openOutputStream(uri) ?: throw IOException("Dosya açılamadı")
+        os.use { o -> FileInputStream(part).use { it.copyTo(o, 1 shl 18) } }
+        v.clear()
+        v.put(MediaStore.Downloads.IS_PENDING, 0)
+        r.update(uri, v, null, null)
+    }
+
+    // ---------------------------------------------------------------- ağ
+
+    private fun open(path: String, offset: Long): HttpURLConnection {
+        val url = URL("http://$curHost:${link.port}$path?k=${link.token}")
+        val n = net
+        val c = (if (n != null) n.openConnection(url) else url.openConnection()) as HttpURLConnection
+        c.connectTimeout = 5000
+        c.readTimeout = 15000
+        if (offset > 0) c.setRequestProperty("Range", "bytes=$offset-")
+        return c
+    }
+
+    private fun probe(h: String, n: Network?): Boolean {
+        return try {
+            val url = URL("http://$h:${link.port}/ping?k=${link.token}")
+            val c = (if (n != null) n.openConnection(url) else url.openConnection()) as HttpURLConnection
+            c.connectTimeout = 1500
+            c.readTimeout = 1500
+            val ok = c.responseCode == 200
+            c.disconnect()
+            ok
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun tryHosts(n: Network?): Boolean {
+        for (h in link.hosts) {
+            if (cancelled) return false
+            if (probe(h, n)) {
+                curHost = h
+                net = n
+                return true
+            }
+        }
+        return false
+    }
+
+    /** Gönderene giden çalışan bir yol bul; yoksa Wi-Fi Direct ağına katıl. */
+    @Synchronized
+    fun ensureLink(): Boolean {
+        val h = curHost
+        if (h != null && probe(h, net)) return true
+        for (n in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(n) ?: continue
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && tryHosts(n)) return true
+        }
+        if (tryHosts(null)) return true
+        if (link.ssid != null && link.pass != null && !cancelled) {
+            val n = join()
+            if (n != null && tryHosts(n)) return true
+        }
+        return false
+    }
+
+    private fun join(): Network? {
+        Bus.update { it.copy(phase = Phase.CONNECTING, message = "Gönderenin Wi-Fi ağına bağlanılıyor… (onay penceresi çıkarsa Bağlan'a bas)") }
+        callback?.let {
+            try {
+                cm.unregisterNetworkCallback(it)
+            } catch (e: Exception) {
+            }
+        }
+        callback = null
+        val spec = WifiNetworkSpecifier.Builder()
+            .setSsid(link.ssid!!)
+            .setWpa2Passphrase(link.pass!!)
+            .build()
+        val req = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .setNetworkSpecifier(spec)
+            .build()
+        val latch = CountDownLatch(1)
+        var got: Network? = null
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                got = network
+                latch.countDown()
+            }
+
+            override fun onUnavailable() {
+                latch.countDown()
+            }
+
+            override fun onLost(network: Network) {
+                if (net == network) net = null
+            }
+        }
+        callback = cb
+        return try {
+            cm.requestNetwork(req, cb, 30000)
+            latch.await(32, TimeUnit.SECONDS)
+            got
+        } catch (e: Exception) {
+            null
+        }
+    }
+}

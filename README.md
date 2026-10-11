@@ -1,15 +1,18 @@
-# LAN Dosya Transferi (APK)
+# Hızlı Aktar
 
-QR ile eşleşen, aynı ağdaki cihazlar arası dosya aktarımı. Flask sunucusu + Kivy arayüzü.
+Telefondan telefona QR ile dosya aktarımı. IP/port/PIN yok.
 
-## Kullanım
-- **Gönderen:** "Dosya Gönder" > klasörlerde gezin, dosyaya dokunun > ekranda QR çıkar. Alıcı indirirken yüzde ilerleme görünür.
-- **Alan:** "Dosya Al" > QR'ı okutun > dosya Download klasörüne iner (yüzde ilerleme gösterilir).
-- QR'daki bağlantı tek seferlik rastgele bir anahtar içerir; PIN/IP yazmaya gerek yok.
-  QR'ı herhangi bir telefon kamerası okutursa tarayıcıdan da indirir.
+- Gönderen: dosyaları seçer (sınırsız), "Bağlantıyı başlat" der, QR çıkar.
+- Alıcı: "Al" → QR tara. Dosyalar İndirilenler/HizliAktar klasörüne iner.
+- Wi-Fi Direct grubu önce 5 GHz, olmazsa 2.4 GHz, o da olmazsa otomatik bandla kurulur.
+- Aynı Wi-Fi/hotspot'taki cihazlar için yerel ağ adresi de QR'a girer (yedek yol).
+- Bağlantı koparsa alıcı ağa yeniden katılır ve dosyaya kaldığı byte'tan devam eder.
+- Yüzde, hız (MB/sn) ve dosya başına ilerleme gösterilir.
 
-## APK nasıl alınır
-GitHub'a yükle > Actions > Build APK > Artifacts > `lan-dosya-transferi-apk`.
+## Derleme
 
-## İzinler
-Depolama, "Tüm dosyalara erişim" ve kamera (QR tarama) izinleri istenir.
+1. Bu klasörün içeriğini bir GitHub reposuna yükle (kökte `settings.gradle.kts` olmalı).
+2. Actions → "APK Derle" otomatik çalışır (push'ta) veya "Run workflow".
+3. Bitince Artifacts → `HizliAktar-apk` içinden `app-debug.apk` indir, kur.
+
+Gereksinim: Android 10 (API 29) ve üzeri.
