@@ -11,7 +11,7 @@ data class PoolFile(val owner: String, val index: Int, val name: String, val siz
 data class PoolDevice(val id: String, val name: String, val ip: String, val files: List<PoolFile>)
 
 /** status: "downloading" | "done" | "error" */
-data class DlState(val done: Long, val size: Long, val status: String)
+data class DlState(val done: Long, val size: Long, val status: String, val note: String = "")
 
 data class PoolState(
     val running: Boolean = false,
@@ -79,7 +79,11 @@ object PoolKey {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("pool_key", null)
 
     fun save(ctx: Context, key: String?) {
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("pool_key", key).apply()
+        val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val e = p.edit().putString("pool_key", key)
+        // Havuzdan çıkınca paylaşılan dosya listesi de silinir.
+        if (key == null) p.all.keys.filter { it.startsWith("pool_files_") }.forEach { e.remove(it) }
+        e.apply()
     }
 
     fun deviceId(ctx: Context): String {

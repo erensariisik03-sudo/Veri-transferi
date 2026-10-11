@@ -19,7 +19,10 @@ class PoolActivity : Activity() {
     private val reqPick = 31
     private val reqPerm = 32
 
-    private class Row(val label: TextView, val action: Button, val owner: String, val index: Int, val mine: Boolean)
+    private class Row(
+        val label: TextView, val base: String, val action: Button,
+        val owner: String, val index: Int, val mine: Boolean
+    )
 
     private lateinit var intro: TextView
     private lateinit var btnNew: Button
@@ -86,6 +89,19 @@ class PoolActivity : Activity() {
         if (PoolKey.load(this) != null && PoolBus.engine == null) PoolService.start(this)
         PoolBus.listener = { render(it) }
         render(PoolBus.state)
+        if (PoolKey.load(this) != null) askBasicPermissions()
+    }
+
+    private var askedBasic = false
+
+    /** Android 9 ve altında indirilen dosyayı İndirilenler'e yazmak için depolama izni şart. */
+    private fun askBasicPermissions() {
+        if (askedBasic) return
+        val need = Perms.missing(this, Perms.all(Perms.storage()))
+        if (need.isNotEmpty()) {
+            askedBasic = true
+            requestPermissions(need, reqPerm)
+        }
     }
 
     override fun onPause() {
@@ -98,22 +114,14 @@ class PoolActivity : Activity() {
     private fun joinKey(key: String) {
         PoolKey.save(this, key)
         shownKey = null
+        askedBasic = false
         PoolService.start(this)
         render(PoolBus.state)
+        askBasicPermissions()
     }
 
     private fun createPool() {
-        askNotifPermission()
         joinKey(PoolKey.create())
-    }
-
-    private fun askNotifPermission() {
-        if (android.os.Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), reqPerm)
-        }
     }
 
     private fun scan() {
@@ -226,7 +234,8 @@ class PoolActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
             }
-            val label = Ui.text(this, f.name + "\n" + Util.fmtBytes(f.size), 14f, Ui.TEXT)
+            val base = f.name + "\n" + Util.fmtBytes(f.size)
+            val label = Ui.text(this, base, 14f, Ui.TEXT)
             label.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             val btn = small(if (mine) "Kaldır" else "İndir") {
                 val e = PoolBus.engine
@@ -237,7 +246,7 @@ class PoolActivity : Activity() {
             line.addView(label)
             line.addView(btn)
             list.addView(line)
-            rows.add(Row(label, btn, f.owner, f.index, mine))
+            rows.add(Row(label, base, btn, f.owner, f.index, mine))
         }
         if (s.mine.isNotEmpty()) {
             header("Benim paylaştıklarım (${s.mine.size})")
@@ -293,6 +302,8 @@ class PoolActivity : Activity() {
         for (r in rows) {
             if (r.mine) continue
             val st = s.dl[r.owner + ":" + r.index]
+            val note = st?.note ?: ""
+            r.label.text = if (note.isEmpty()) r.base else r.base + "\n" + note
             when (st?.status) {
                 null -> {
                     r.action.text = "İndir"

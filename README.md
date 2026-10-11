@@ -8,6 +8,12 @@ Telefon, tablet ve bilgisayar arasında dosya aktarımı. Android (APK) ve Windo
 - Bir cihazda "Yeni havuz oluştur"; diğerlerinde QR'ı okut ya da 10 haneli kodu bir kez gir. Eşleşme saklanır.
 - Bir cihaz dosya eklediğinde diğer tüm cihazlarda listede görünür; isteyen dokunup indirir.
 - Cihazlar birbirini UDP yayınıyla otomatik bulur. Yalnızca aynı ağda (aynı Wi-Fi / hotspot) çalışır.
+  Aynı router'ın 5 GHz ve 2.4 GHz bantları aynı ağdır; farklı bantlardaki cihazlar birbirini görür.
+- Havuz hatırlanır: uygulama kapansa bile anahtar ve paylaştığın dosyalar saklanır. Android'de havuz bildirimdeki
+  servisle arka planda açık kalır (bildirimden "Kapat" ile durdurulur, uygulama açılınca yeniden başlar);
+  Windows'ta uygulama açılınca havuza kendiliğinden döner. Tamamen silmek için "Havuzdan çık".
+- İndirme hatası olursa satırın altında nedeni yazar. Android 9 ve altında indirme için depolama izni istenir
+  (verilmezse dosya uygulamanın kendi klasörüne kaydedilir ve yolu gösterilir).
 
 **Gönder / Al (QR ile birebir aktarım)**
 - Gönderen dosyaları seçer (sınırsız), QR çıkar, alıcı okutur. IP/PIN yok.

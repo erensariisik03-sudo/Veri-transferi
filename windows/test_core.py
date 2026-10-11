@@ -161,11 +161,45 @@ def test_pool(tmp):
     print("ok pool (3 motor, keşif + liste + indirme + kaldırma + ayrılma)")
 
 
+def test_pool_restart(tmp):
+    pa, pb = 47611, 47612
+    key = core.new_key()
+    saved = {}
+    A = core.PoolEngine(key, os.path.join(tmp, "dA"), "idA", "PC", os.path.join(tmp, "wA"),
+                        udp_port=pa, targets=[("127.0.0.1", pb)], every=0.3,
+                        on_shared=lambda p: saved.__setitem__("p", p))
+    B = core.PoolEngine(key, os.path.join(tmp, "dB"), "idB", "Tablet", os.path.join(tmp, "wB"),
+                        udp_port=pb, targets=[("127.0.0.1", pa)], every=0.3)
+    A.start()
+    B.start()
+    f1 = make_file(tmp, "a1.bin", 1000)
+    f2 = make_file(tmp, "a2.bin", 2000)
+    A.add_files([f1, f2])
+    A.remove_file(0)
+    wait(lambda: [f[1] for d in B.snapshot()["devices"] for f in d["files"]] == ["a2.bin"], 8, "ilk liste")
+    assert saved["p"] == ["", f2], saved
+    # uygulama kapanır, yeniden açılır: kayıtlı paylaşımlar geri gelir, indeks aynı kalır
+    A.stop()
+    wait(lambda: B.snapshot()["devices"] == [], 8, "A düşsün")
+    A2 = core.PoolEngine(key, os.path.join(tmp, "dA"), "idA", "PC", os.path.join(tmp, "wA"),
+                         udp_port=pa, targets=[("127.0.0.1", pb)], every=0.3, shared=saved["p"])
+    assert A2.version != 0
+    A2.start()
+    wait(lambda: [(f[0], f[1]) for d in B.snapshot()["devices"] for f in d["files"]] == [(1, "a2.bin")], 8,
+         "yeniden açılınca liste geri gelsin")
+    B.download("idA", 1)
+    wait(lambda: B.snapshot()["dl"].get(("idA", 1), {}).get("status") == "done", 10, "indirme")
+    assert sha(B.snapshot()["dl"][("idA", 1)]["path"]) == sha(f2)
+    A2.stop()
+    B.stop()
+    print("ok pool restart (paylaşımlar hatırlandı, indeks sabit)")
+
+
 if __name__ == "__main__":
     root = tempfile.mkdtemp(prefix="hatest_")
     try:
         test_links()
-        for fn in (test_server_resume, test_midstream_drop, test_sender_receiver, test_pool):
+        for fn in (test_server_resume, test_midstream_drop, test_sender_receiver, test_pool, test_pool_restart):
             d = os.path.join(root, fn.__name__)
             os.makedirs(d)
             fn(d)

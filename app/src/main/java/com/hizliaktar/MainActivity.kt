@@ -44,5 +44,12 @@ class MainActivity : Activity() {
         val p = Bus.state.phase
         val active = p != Phase.IDLE && p != Phase.ERROR && p != Phase.DONE
         Ui.show(resume, active)
+        // Havuza bir kez katıldıysan uygulama açılır açılmaz havuz yeniden devreye girer.
+        if (PoolKey.load(this) != null && PoolBus.engine == null) {
+            try {
+                PoolService.start(this)
+            } catch (e: Exception) {
+            }
+        }
     }
 }

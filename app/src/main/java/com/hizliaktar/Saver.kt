@@ -12,15 +12,12 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 
-/** Tamamlanan dosyayı İndirilenler/HizliAktar klasörüne taşır. */
+/** Tamamlanan dosyayı İndirilenler/HizliAktar klasörüne taşır; konumu döndürür. */
 object Saver {
-    /** Android 9 ve altı: doğrudan İndirilenler/HizliAktar klasörüne yaz. */
-    private fun saveLegacy(ctx: Context, part: File, name: String) {
-        val dir = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            "HizliAktar"
-        )
-        if (!dir.exists() && !dir.mkdirs()) throw IOException("Klasör oluşturulamadı")
+
+    private const val PUBLIC_LOCATION = "İndirilenler/HizliAktar"
+
+    private fun uniqueTarget(dir: File, name: String): File {
         var target = File(dir, name)
         var n = 1
         val base = name.substringBeforeLast('.', name)
@@ -29,16 +26,39 @@ object Saver {
             target = File(dir, if (ext.isEmpty()) "$base ($n)" else "$base ($n).$ext")
             n++
         }
-        FileInputStream(part).use { i -> FileOutputStream(target).use { o -> i.copyTo(o, 1 shl 18) } }
-        MediaScannerConnection.scanFile(ctx, arrayOf(target.absolutePath), null, null)
+        return target
     }
 
-    fun save(ctx: Context, part: File, rawName: String) {
-        val name = rawName.replace('/', '_').replace('\\', '_')
-        if (Build.VERSION.SDK_INT < 29) {
-            saveLegacy(ctx, part, name)
-            return
+    private fun copyInto(part: File, dir: File, name: String): File {
+        if (!dir.exists() && !dir.mkdirs()) throw IOException("Klasör oluşturulamadı")
+        val target = uniqueTarget(dir, name)
+        FileInputStream(part).use { i -> FileOutputStream(target).use { o -> i.copyTo(o, 1 shl 18) } }
+        return target
+    }
+
+    /**
+     * Android 9 ve altı: İndirilenler/HizliAktar'a yaz. Depolama izni yoksa dosya
+     * kaybolmasın diye uygulamanın kendi klasörüne kaydeder.
+     */
+    private fun saveLegacy(ctx: Context, part: File, name: String): String {
+        try {
+            val pub = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "HizliAktar"
+            )
+            val t = copyInto(part, pub, name)
+            MediaScannerConnection.scanFile(ctx, arrayOf(t.absolutePath), null, null)
+            return PUBLIC_LOCATION
+        } catch (e: Exception) {
+            val base = ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: ctx.filesDir
+            val t = copyInto(part, File(base, "HizliAktar"), name)
+            return t.parentFile?.absolutePath + " (depolama izni yok)"
         }
+    }
+
+    fun save(ctx: Context, part: File, rawName: String): String {
+        val name = rawName.replace('/', '_').replace('\\', '_')
+        if (Build.VERSION.SDK_INT < 29) return saveLegacy(ctx, part, name)
         val ext = name.substringAfterLast('.', "").lowercase()
         val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
         val r = ctx.contentResolver
@@ -55,5 +75,6 @@ object Saver {
         v.clear()
         v.put(MediaStore.Downloads.IS_PENDING, 0)
         r.update(uri, v, null, null)
+        return PUBLIC_LOCATION
     }
 }

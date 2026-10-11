@@ -50,8 +50,9 @@ class PoolEngine(
     private val totalBytes = AtomicLong(0)
     private val pool = Executors.newCachedThreadPool()
 
+    // Her açılışta farklı bir başlangıç: yeniden başlayan cihazın listesini diğerleri mutlaka yeniden çeker.
     @Volatile
-    private var version = 0
+    private var version = (System.currentTimeMillis() / 1000 % 1_000_000_000L).toInt()
 
     @Volatile
     private var running = false
@@ -68,6 +69,7 @@ class PoolEngine(
 
     fun start() {
         running = true
+        restore()
         val srv = FileServer(
             ctx, { it == tok }, { synchronized(lock) { ArrayList(mine) } }, { _, _ -> }, { }
         )
@@ -93,6 +95,7 @@ class PoolEngine(
             mine.addAll(list)
             version++
         }
+        persist()
         publish()
     }
 
@@ -103,7 +106,43 @@ class PoolEngine(
                 version++
             }
         }
+        persist()
         publish()
+    }
+
+    // --------------------------------------------------------------- kalıcılık
+
+    private val filesPref get() = "pool_files_$pid"
+
+    /** Paylaşılan dosyalar (boş giriş = kaldırılmış) kaydedilir; indeksler yeniden açılışta aynı kalır. */
+    private fun persist() {
+        try {
+            val arr = org.json.JSONArray()
+            synchronized(lock) { mine.forEach { arr.put(it?.uri?.toString() ?: "") } }
+            ctx.getSharedPreferences("hizli", Context.MODE_PRIVATE).edit()
+                .putString(filesPref, arr.toString()).apply()
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun restore() {
+        try {
+            val txt = ctx.getSharedPreferences("hizli", Context.MODE_PRIVATE)
+                .getString(filesPref, null) ?: return
+            val arr = org.json.JSONArray(txt)
+            synchronized(lock) {
+                for (i in 0 until arr.length()) {
+                    val u = arr.optString(i, "")
+                    val f = if (u.isEmpty()) null else try {
+                        Util.describe(ctx, android.net.Uri.parse(u))
+                    } catch (e: Exception) {
+                        null
+                    }
+                    mine.add(f)
+                }
+            }
+        } catch (e: Exception) {
+        }
     }
 
     // ------------------------------------------------------------------- keşif
@@ -295,8 +334,8 @@ class PoolEngine(
         pool.execute { downloadWorker(f, k) }
     }
 
-    private fun setDl(k: String, done: Long, size: Long, status: String) {
-        synchronized(lock) { dl[k] = DlState(done, size, status) }
+    private fun setDl(k: String, done: Long, size: Long, status: String, note: String = "") {
+        synchronized(lock) { dl[k] = DlState(done, size, status, note) }
         publish()
     }
 
@@ -304,6 +343,7 @@ class PoolEngine(
         val dir = ctx.getExternalFilesDir("incoming") ?: ctx.cacheDir
         val part = File(dir, "pool_${pid}_${f.owner}_${f.index}_${f.size}.part")
         var ok = false
+        var note = ""
         try {
             var stall = 0
             while (running && part.length() < f.size) {
@@ -342,21 +382,24 @@ class PoolEngine(
                     if (running && part.length() < f.size) throw IOException("eksik veri")
                 } catch (e: IOException) {
                     if (!running) break
+                    note = "Bağlantı: " + (e.message ?: e.javaClass.simpleName)
                     stall = if (part.length() > before) 1 else stall + 1
                     if (stall > 30) break
+                    setDl(k, part.length(), f.size, "downloading", note)
                     sleep(minOf(1000L * stall, 5000L))
                 }
             }
             if (running && part.length() >= f.size) {
                 if (!part.exists()) part.createNewFile()
-                Saver.save(ctx, part, f.name)
+                note = Saver.save(ctx, part, f.name)
                 part.delete()
                 ok = true
             }
         } catch (e: Exception) {
             ok = false
+            note = "Kaydedilemedi: " + (e.message ?: e.javaClass.simpleName)
         }
-        setDl(k, if (ok) f.size else part.length(), f.size, if (ok) "done" else "error")
+        setDl(k, if (ok) f.size else part.length(), f.size, if (ok) "done" else "error", note)
     }
 
     // ------------------------------------------------------------------ görünüm

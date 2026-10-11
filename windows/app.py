@@ -135,7 +135,14 @@ class PoolTab(ttk.Frame):
         if self.engine:
             self.engine.stop()
         cfg = self.app.cfg
-        self.engine = core.PoolEngine(key, cfg.get("dest_dir"), cfg.get("device_id"), cfg.get("device_name"))
+        saved = cfg.get("shared_paths") if cfg.get("shared_key") == key else None
+        if cfg.get("shared_key") != key:
+            cfg.set("shared_paths", [])
+            cfg.set("shared_key", key)
+        self.engine = core.PoolEngine(
+            key, cfg.get("dest_dir"), cfg.get("device_id"), cfg.get("device_name"),
+            shared=saved, on_shared=lambda paths: cfg.set("shared_paths", paths)
+        )
         self.engine.start()
         cfg.set("pool_key", key)
         self.code_lbl.config(text="Havuz kodu: " + core.pretty_key(key))
@@ -173,6 +180,8 @@ class PoolTab(ttk.Frame):
             self.engine.stop()
         self.engine = None
         self.app.cfg.set("pool_key", None)
+        self.app.cfg.set("shared_paths", [])
+        self.app.cfg.set("shared_key", None)
         for iid in self.tree.get_children():
             self.tree.delete(iid)
         self.update_buttons()

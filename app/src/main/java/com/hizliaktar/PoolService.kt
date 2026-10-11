@@ -61,7 +61,13 @@ class PoolService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        goForeground("Ortak havuz açılıyor…")
+        // Sistem servisi öldürüp yeniden başlatırsa (intent = null) havuz kayıtlı anahtarla kendiliğinden açılır.
+        try {
+            goForeground("Ortak havuz açılıyor…")
+        } catch (e: Exception) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         val key = PoolKey.load(this)
         if (key == null) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -72,7 +78,7 @@ class PoolService : Service() {
             shutdown()
             begin(key)
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     override fun onDestroy() {
@@ -173,7 +179,12 @@ class PoolService : Service() {
         val pi = PendingIntent.getActivity(
             this, 0, Intent(this, PoolActivity::class.java), PendingIntent.FLAG_IMMUTABLE
         )
+        val stop = PendingIntent.getService(
+            this, 1, Intent(this, PoolService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE
+        )
         return Notification.Builder(this, CH)
+            .addAction(Notification.Action.Builder(null, "Kapat", stop).build())
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("Hızlı Aktar")
             .setContentText(text)

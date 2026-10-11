@@ -685,14 +685,22 @@ class PoolEngine:
     """Aynı ağdaki cihazlar birbirini bulur, paylaşılan dosyaları listeler."""
 
     def __init__(self, key, dest_dir, device_id, device_name, work_dir=None,
-                 udp_port=UDP_PORT, targets=None, every=2.0):
+                 udp_port=UDP_PORT, targets=None, every=2.0, shared=None, on_shared=None):
         self.key, self.dest = key, dest_dir
         self.pid, self.tok = pid_of(key), tok_of(key)
         self.device_id, self.device_name = device_id, device_name
         self.work = work_dir or os.path.join(app_dir(), "incoming")
         self.udp_port, self.targets, self.every = udp_port, targets, every
         self.mine = []
-        self.version = 0
+        # Her açılışta farklı başlangıç: yeniden başlayan cihazın listesini diğerleri mutlaka yeniden çeker.
+        self.version = int(time.time()) % (10 ** 9)
+        self.on_shared = on_shared
+        # Önceki oturumdan kalan paylaşımlar (boş giriş = kaldırılmış; indeksler sabit kalır).
+        for p in (shared or []):
+            try:
+                self.mine.append(SharedFile(p) if p else None)
+            except OSError:
+                self.mine.append(None)
         self.peers = {}
         self.dl = {}
         self.lock = threading.RLock()
@@ -723,12 +731,25 @@ class PoolEngine:
                 except OSError:
                     continue
             self.version += 1
+        self._changed()
 
     def remove_file(self, idx):
         with self.lock:
             if 0 <= idx < len(self.mine):
                 self.mine[idx] = None
                 self.version += 1
+        self._changed()
+
+    def shared_paths(self):
+        with self.lock:
+            return [f.path if f is not None else "" for f in self.mine]
+
+    def _changed(self):
+        if self.on_shared:
+            try:
+                self.on_shared(self.shared_paths())
+            except Exception:
+                pass
 
     # -- keşif
     def _targets(self):
